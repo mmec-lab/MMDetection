@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from mmcv.runner import ModuleList
-
+import numpy as np
 from mmdet.core import (bbox2result, bbox2roi, bbox_mapping, build_assigner,
                         build_sampler, merge_aug_bboxes, merge_aug_masks,
                         multiclass_nms)
@@ -122,7 +122,7 @@ class CascadeRoIHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
             mask_rois = rois[:100]
             for i in range(self.num_stages):
                 mask_results = self._mask_forward(i, x, mask_rois)
-                outs = outs + (mask_results['mask_pred'], )
+                outs = outs + (mask_results['mask_pred'],)
         return outs
 
     def _bbox_forward(self, stage, x, rois):
@@ -398,6 +398,118 @@ class CascadeRoIHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
                 zip(ms_bbox_result['ensemble'], ms_segm_result['ensemble']))
         else:
             results = ms_bbox_result['ensemble']
+        return results
+
+    def foward_tracing(self, x, proposal_list, img_metas, rescale=False):
+        """Test without augmentation."""
+        num_imgs = len(proposal_list)
+        img_shapes = tuple(meta['img_shape'] for meta in img_metas)
+        ori_shapes = tuple(meta['ori_shape'] for meta in img_metas)
+        scale_factors = tuple(meta['scale_factor'] for meta in img_metas)
+
+        # "ms" in variable names means multi-stage
+        ms_bbox_result = {}
+        ms_segm_result = {}
+        ms_scores = []
+        rcnn_test_cfg = self.test_cfg
+
+        rois = bbox2roi(proposal_list)
+        for i in range(self.num_stages):
+            bbox_results = self._bbox_forward(i, x, rois)
+
+            # split batch bbox prediction back to each image
+            cls_score = bbox_results['cls_score']
+            bbox_pred = bbox_results['bbox_pred']
+            num_proposals_per_img = tuple(len(proposals) for proposals in proposal_list)
+
+            rois = rois.split(num_proposals_per_img, 0)
+            cls_score = cls_score.split(num_proposals_per_img, 0)
+            if isinstance(bbox_pred, torch.Tensor):
+                bbox_pred = bbox_pred.split(num_proposals_per_img, 0)
+            else:
+                bbox_pred = self.bbox_head[i].bbox_pred_split(
+                    bbox_pred, num_proposals_per_img)
+            ms_scores.append(cls_score)
+
+            if i < self.num_stages - 1:
+                bbox_label = [s[:, :-1].argmax(dim=1) for s in cls_score]
+                rois = torch.cat([
+                    self.bbox_head[i].regress_by_class(
+                        rois[j], bbox_label[j], bbox_pred[j], img_metas[j])
+                    for j in range(num_imgs)
+                ])
+
+        # average scores of each image by stages
+        cls_score = [
+            sum([score[i] for score in ms_scores]) / float(len(ms_scores))
+            for i in range(num_imgs)
+        ]
+
+        # apply bbox post-processing to each image individually
+        det_bboxes = []
+        det_labels = []
+        for i in range(num_imgs):
+            det_bbox, det_label = self.bbox_head[-1].get_bboxes(
+                rois[i], cls_score[i], bbox_pred[i], img_shapes[i], scale_factors[i],
+                rescale=rescale, cfg=rcnn_test_cfg)
+            det_bboxes.append(det_bbox)
+            det_labels.append(det_label)
+
+        results = dict(bboxes=tuple(det_bboxes),
+                       labels=tuple(det_labels)
+                       )
+
+        if self.with_mask:
+            is_det = []
+            for det_bbox in det_bboxes:
+                is_det.append(det_bbox.shape[0] == 0)
+            if all(is_det):
+                mask_classes = self.mask_head[-1].num_classes
+                segm_results = [[[] for _ in range(mask_classes)] for _ in range(num_imgs)]
+            else:
+                if rescale:
+                    if isinstance(scale_factors[0], torch.Tensor):
+                        scale_factors = list(scale_factors)
+                    else:
+                        scale_factors = [
+                            torch.from_numpy(scale_factor).to(det_bboxes[0].device)
+                            for scale_factor in scale_factors
+                        ]
+
+                _bboxes = []
+                for i in range(len(det_bboxes)):
+                    _bboxes.append(det_bboxes[i][:, :4] * scale_factors[i])
+
+                mask_rois = bbox2roi(_bboxes)
+                # num_mask_rois_per_img = tuple(_bbox.size(0) for _bbox in _bboxes)
+                num_mask_rois_per_img = []
+                for _bbox in _bboxes:
+                    num_mask_rois_per_img.append(_bbox.size()[0])
+                num_mask_rois_per_img = tuple(num_mask_rois_per_img)
+
+                aug_masks = []
+                for i in range(self.num_stages):
+                    mask_results = self._mask_forward(i, x, mask_rois)
+                    mask_pred = mask_results['mask_pred']
+                    # split batch mask prediction back to each image
+                    mask_pred = mask_pred.split(num_mask_rois_per_img, 0)
+                    aug_masks.append([m.sigmoid() for m in mask_pred])
+
+                # apply mask post-processing to each image individually
+                segm_results = []
+                for i in range(num_imgs):
+                    if det_bboxes[i].shape[0] == 0:
+                        segm_results.append([[] for _ in range(self.mask_head[-1].num_classes)])
+                    else:
+                        aug_mask = [mask[i] for mask in aug_masks]
+                        merged_masks = merge_aug_masks(
+                            aug_mask, [[img_metas[i]]] * self.num_stages, rcnn_test_cfg)
+                        segm_result = self.mask_head[-1].get_seg_masks(
+                            merged_masks, _bboxes[i], det_labels[i],
+                            rcnn_test_cfg, ori_shapes[i], scale_factors[i], rescale)
+                        segm_results.append(segm_result)
+
+                    results['segm'] = tuple(segm_results)
 
         return results
 

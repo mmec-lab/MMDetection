@@ -1,4 +1,5 @@
 import torch
+from torchvision.ops import boxes as box_ops
 
 from .builder import IOU_CALCULATORS
 
@@ -67,7 +68,7 @@ class BboxOverlaps2D:
     def __repr__(self):
         """str: a string describing the module"""
         repr_str = self.__class__.__name__ + f'(' \
-            f'scale={self.scale}, dtype={self.dtype})'
+                                             f'scale={self.scale}, dtype={self.dtype})'
         return repr_str
 
 
@@ -205,14 +206,14 @@ def bbox_overlaps(bboxes1, bboxes2, mode='iou', is_aligned=False, eps=1e-6):
 
     if rows * cols == 0:
         if is_aligned:
-            return bboxes1.new(batch_shape + (rows, ))
+            return bboxes1.new(batch_shape + (rows,))
         else:
             return bboxes1.new(batch_shape + (rows, cols))
 
     area1 = (bboxes1[..., 2] - bboxes1[..., 0]) * (
-        bboxes1[..., 3] - bboxes1[..., 1])
+            bboxes1[..., 3] - bboxes1[..., 1])
     area2 = (bboxes2[..., 2] - bboxes2[..., 0]) * (
-        bboxes2[..., 3] - bboxes2[..., 1])
+            bboxes2[..., 3] - bboxes2[..., 1])
 
     if is_aligned:
         lt = torch.max(bboxes1[..., :2], bboxes2[..., :2])  # [B, rows, 2]
@@ -258,3 +259,28 @@ def bbox_overlaps(bboxes1, bboxes2, mode='iou', is_aligned=False, eps=1e-6):
     enclose_area = torch.max(enclose_area, eps)
     gious = ious - (enclose_area - union) / enclose_area
     return gious
+
+
+def batched_nms(boxes: torch.Tensor,
+                scores: torch.Tensor,
+                idxs: torch.Tensor,
+                iou_threshold: float
+                ):
+    """
+    Same as torchvision.ops.boxes.batched_nms, but safer.
+    """
+    assert boxes.shape[-1] == 4
+    # TODO may need better strategy.
+    # Investigate after having a fully-cuda NMS op.
+    if len(boxes) < 40000:
+        # fp16 does not have enough range for batched NMS
+        return box_ops.batched_nms(boxes.float(), scores, idxs, iou_threshold)
+
+    result_mask = scores.new_zeros(scores.size(), dtype=torch.bool)
+    for id in torch.jit.annotate(List[int], torch.unique(idxs).cpu().tolist()):
+        mask = (idxs == id).nonzero().view(-1)
+        keep = nms(boxes[mask], scores[mask], iou_threshold)
+        result_mask[mask[keep]] = True
+    keep = result_mask.nonzero().view(-1)
+    keep = keep[scores[keep].argsort(descending=True)]
+    return keep

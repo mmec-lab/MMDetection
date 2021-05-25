@@ -142,9 +142,17 @@ def merge_aug_masks(aug_masks, img_metas, rcnn_test_cfg, weights=None):
                     f"Invalid flipping direction '{flip_direction}'")
         recovered_masks.append(mask)
 
-    if weights is None:
-        merged_masks = np.mean(recovered_masks, axis=0)
+    if torch.is_tensor(recovered_masks[0]):
+        if weights is None:
+            merged_masks = torch.mean(torch.stack(recovered_masks), dim=0)
+        else:
+            merged_masks = torch.zeros(recovered_masks[0].size())
+            for m, w in zip(recovered_masks, weights):
+                merged_masks = merged_masks + m * w
     else:
-        merged_masks = np.average(
-            np.array(recovered_masks), axis=0, weights=np.array(weights))
+        if weights is None:
+            merged_masks = np.mean(recovered_masks, axis=0)
+        else:
+            merged_masks = np.average(
+                np.array(recovered_masks), axis=0, weights=np.array(weights))
     return merged_masks

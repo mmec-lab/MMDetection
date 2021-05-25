@@ -1,7 +1,7 @@
 import torch
-from mmcv.ops.nms import batched_nms
+# from mmcv.ops.nms import batched_nms
 
-from mmdet.core.bbox.iou_calculators import bbox_overlaps
+from mmdet.core.bbox.iou_calculators import bbox_overlaps, batched_nms
 
 
 def multiclass_nms(multi_bboxes,
@@ -81,7 +81,8 @@ def multiclass_nms(multi_bboxes,
         else:
             return bboxes, labels
 
-    dets, keep = batched_nms(bboxes, scores, labels, nms_cfg)
+    keep = batched_nms(bboxes, scores, labels, nms_cfg['iou_threshold'])
+    dets = bboxes[keep]
 
     if max_num > 0:
         dets = dets[:max_num]

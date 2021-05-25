@@ -564,6 +564,10 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
                 img_metas
             ) == 1, 'Only support one input image while in exporting to ONNX'
             img_shapes = img_metas[0]['img_shape_for_onnx']
+        elif torch.jit.is_tracing():
+            img_shapes = []
+            for i in range(cls_scores[0].shape[0]):
+                img_shapes.append(img_metas[i]['img_shape'])
         else:
             img_shapes = [
                 img_metas[i]['img_shape']

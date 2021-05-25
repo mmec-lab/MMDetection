@@ -224,9 +224,7 @@ class FCNMaskHead(BaseModule):
             >>> assert len(encoded_masks) == C
             >>> assert sum(list(map(len, encoded_masks))) == N
         """
-        if isinstance(mask_pred, torch.Tensor):
-            mask_pred = mask_pred.sigmoid()
-        else:
+        if not isinstance(mask_pred, torch.Tensor):
             mask_pred = det_bboxes.new_tensor(mask_pred)
 
         device = mask_pred.device
@@ -319,6 +317,9 @@ class FCNMaskHead(BaseModule):
                 masks_chunk = (masks_chunk * 255).to(dtype=torch.uint8)
 
             im_mask[(inds, ) + spatial_inds] = masks_chunk
+
+        if torch.jit.is_tracing():
+            return im_mask.detach().int()
 
         for i in range(N):
             cls_segms[labels[i]].append(im_mask[i].detach().cpu().numpy())

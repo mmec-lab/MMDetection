@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mmcv import ConfigDict
-from mmcv.ops import batched_nms
+# from mmcv.ops import batched_nms
+from mmdet.core.bbox.iou_calculators.iou2d_calculator import batched_nms
 
 from ..builder import HEADS
 from .anchor_head import AnchorHead
@@ -244,7 +245,7 @@ class RPNHead(RPNTestMixin, AnchorHead):
                     mlvl_scores = mlvl_scores[valid_ind]
                     mlvl_ids = mlvl_ids[valid_ind]
 
-            dets, keep = batched_nms(mlvl_proposals, mlvl_scores, mlvl_ids,
-                                     cfg.nms)
+            keep = batched_nms(mlvl_proposals, mlvl_scores, mlvl_ids, cfg.nms['iou_threshold'])
+            dets = mlvl_proposals[keep]
             result_list.append(dets[:cfg.max_per_img])
         return result_list

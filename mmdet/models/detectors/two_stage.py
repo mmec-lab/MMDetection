@@ -2,6 +2,8 @@ import torch
 
 from ..builder import DETECTORS, build_backbone, build_head, build_neck
 from .base import BaseDetector
+from torch.jit.annotations import List, Dict, Optional
+from torch import Tensor
 
 
 @DETECTORS.register_module()
@@ -74,12 +76,32 @@ class TwoStageDetector(BaseDetector):
         # rpn
         if self.with_rpn:
             rpn_outs = self.rpn_head(x)
-            outs = outs + (rpn_outs, )
+            outs = outs + (rpn_outs,)
         proposals = torch.randn(1000, 4).to(img.device)
         # roi_head
         roi_outs = self.roi_head.forward_dummy(x, proposals)
-        outs = outs + (roi_outs, )
+        outs = outs + (roi_outs,)
         return outs
+
+    def adjust_metas_data(self, img_metas):
+        img_metas['img_shape'] = tuple(img_metas['img_shape'])
+        # img_metas['scale_factor'] = tuple([img_metas['scale_factor']])
+        return [img_metas]
+
+    def forward_tracing(self, img, img_metas):
+        """Used for exporting jit.tracing
+        """
+        img_metas = self.adjust_metas_data(img_metas)
+        # img, img_metas, proposals, rescale = torch.load('../cache/temp_vars.pth')
+
+        # backbone
+        x = self.extract_feat(img)
+
+        # rpn
+        proposal_list = self.rpn_head.simple_test_rpn(x, img_metas)
+
+        # roi_head
+        return self.roi_head.foward_tracing(x, proposal_list, img_metas, rescale=True)
 
     def forward_train(self,
                       img,
