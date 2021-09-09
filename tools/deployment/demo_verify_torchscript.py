@@ -28,13 +28,17 @@ def postprocess(outputs, num_classes):
                                 outputs['labels'][i],
                                 num_classes)
                     for i in range(num_imgs)]
+    print("type:",type(outputs))
+    if 'segm' in outputs:  # 分割
+        im_mask = outputs['segm'][0]
+        labels = outputs['labels'][0]
+        cls_segms = [[] for _ in range(num_classes)]  # BG is not included in num_classes
+        for i in range(len(labels)):
+            cls_segms[labels[i]].append(im_mask[i].detach().cpu().numpy() > 0)
 
-    im_mask = outputs['segm'][0]
-    labels = outputs['labels'][0]
-    cls_segms = [[] for _ in range(num_classes)]  # BG is not included in num_classes
-    for i in range(len(labels)):
-        cls_segms[labels[i]].append(im_mask[i].detach().cpu().numpy() > 0)
-    results = list(zip(bbox_results, [cls_segms]))
+        results = list(zip(bbox_results, [cls_segms]))
+    else:
+        results = list(zip(bbox_results))
     return results
 
 
@@ -44,7 +48,8 @@ def main(args, cfg):
     model = torch.jit.load(args.model_file)
 
     outputs = model(mm_inputs['img'], mm_inputs['img_metas'])
-    results = postprocess(outputs, cfg.model.roi_head.mask_head.num_classes)
+    # results = postprocess(outputs, cfg.model.roi_head.mask_head.num_classes)
+    results = postprocess(outputs, 80)
     show_result(img, results,
                 score_thr=0.3,
                 bbox_color='green',
@@ -54,7 +59,7 @@ def main(args, cfg):
                 win_name='',
                 show=False,
                 wait_time=0,
-                out_file="torchscript_res.jpg")
+                out_file="mask.jpg")
 
 
 if __name__ == '__main__':

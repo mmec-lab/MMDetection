@@ -26,6 +26,14 @@ class DeltaXYWHBBoxCoder(BaseBBoxCoder):
             the original anchor's center. Only used by YOLOF. Default False.
         ctr_clamp (int): the maximum pixel shift to clamp. Only used by YOLOF.
             Default 32.
+    Delta XYWH BBox 编码器.
+
+    encode 将 (x1, y1, x2, y2) 编码为 (dx, dy, dw, dh)
+    decode 将 (dx, dy, dw, dh) 解码为 (x1, y1, x2, y2)
+
+    Args:
+        target_means:   (Sequence[float]): 对坐标标准化的均值
+        target_stds:    (Sequence[float]): 对坐标标准化的方差
     """
 
     def __init__(self,
@@ -52,6 +60,14 @@ class DeltaXYWHBBoxCoder(BaseBBoxCoder):
 
         Returns:
             torch.Tensor: Box transformation deltas
+
+        将 (x1, y1, x2, y2) 编码为 (dx, dy, dw, dh)
+        Args:
+            bboxes:     (torch.Tensor): 源 bboxes, 例如: object proposals.
+            gt_bboxes:  (torch.Tensor): 目标 bboxes, 例如: ground-truth boxes.
+
+        Returns:
+            torch.Tensor: (dx, dy, dw, dh) 形式的偏移
         """
 
         assert bboxes.size(0) == gt_bboxes.size(0)
@@ -79,9 +95,20 @@ class DeltaXYWHBBoxCoder(BaseBBoxCoder):
                and the length of max_shape should also be B.
             wh_ratio_clip (float, optional): The allowed ratio between
                 width and height.
-
+                
+        将 (dx, dy, dw, dh) 解码为 (x1, y1, x2, y2)
         Returns:
             torch.Tensor: Decoded boxes.
+
+        Args:
+            bboxes:         (torch.Tensor):         基准 boxes.
+            pred_bboxes:    (torch.Tensor):         预测的 bboxes
+            max_shape:      (tuple[int], optional): bbox 最大的大小(图片大小), 用于裁剪超出图片的 bbox
+            wh_ratio_clip:  (float, optional):      The allowed ratio between
+                width and height.
+
+        Returns:
+            torch.Tensor: (x1, y1, x2, y2) 形式的坐标
         """
 
         assert pred_bboxes.size(0) == bboxes.size(0)
@@ -101,6 +128,7 @@ def bbox2delta(proposals, gt, means=(0., 0., 0., 0.), stds=(1., 1., 1., 1.)):
     We usually compute the deltas of x, y, w, h of proposals w.r.t ground
     truth bboxes to get regression target.
     This is the inverse function of :func:`delta2bbox`.
+    生成 bbox 与 gt 的修正量
 
     Args:
         proposals (Tensor): Boxes to be transformed, shape (N, ..., 4)
@@ -112,24 +140,39 @@ def bbox2delta(proposals, gt, means=(0., 0., 0., 0.), stds=(1., 1., 1., 1.)):
     Returns:
         Tensor: deltas with shape (N, 4), where columns represent dx, dy,
             dw, dh.
+
+    Args:
+        proposals:      (Tensor):           需要转换的 bbox, 形状为 (N, ..., 4)
+        gt:             (Tensor):           Gt bboxes, 形状为 (N, ..., 4)
+        means:          (Sequence[float]):  对坐标标准化的均值
+        stds:           (Sequence[float]):  对坐标标准化的方差
+
+    Returns:
+        Tensor: (dx, dy, dw, dh) 形式的偏移
     """
     assert proposals.size() == gt.size()
 
     proposals = proposals.float()
     gt = gt.float()
+    # bbox 的中点坐标
     px = (proposals[..., 0] + proposals[..., 2]) * 0.5
     py = (proposals[..., 1] + proposals[..., 3]) * 0.5
+    # box 的宽高
     pw = proposals[..., 2] - proposals[..., 0]
     ph = proposals[..., 3] - proposals[..., 1]
-
+    # ground truth 的中点坐标
     gx = (gt[..., 0] + gt[..., 2]) * 0.5
     gy = (gt[..., 1] + gt[..., 3]) * 0.5
+    # ground truth 的宽高
     gw = gt[..., 2] - gt[..., 0]
     gh = gt[..., 3] - gt[..., 1]
-
+    # 需要预测的 x
     dx = (gx - px) / pw
+    # 需要预测的 y
     dy = (gy - py) / ph
+    # 需要预测的 w
     dw = torch.log(gw / pw)
+    # 需要预测的 h
     dh = torch.log(gh / ph)
     deltas = torch.stack([dx, dy, dw, dh], dim=-1)
 
@@ -184,6 +227,20 @@ def delta2bbox(rois,
            (N, num_classes * 4) or (N, 4), where 4 represent
            tl_x, tl_y, br_x, br_y.
 
+    将 (dx, dy, dw, dh) 解码为 (x1, y1, x2, y2)
+    Args:
+        rois:           (Tensor):           需要转换的 bbox, 形状为 (N, 4)
+        deltas:         (Tensor):           bbox 的修正量, 形状为 (N, 4 * num_classes). 
+                                            其中 N = num_anchors * W * H
+        means:          (Sequence[float]):  对坐标标准化的均值
+        stds:           (Sequence[float]):  对坐标标准化的方差
+        max_shape:      (tuple[int, int]):  bbox 最大的大小(图片大小), 用于裁剪超出图片的 bbox
+        wh_ratio_clip:  (float):            bbox 最大的缩放比例
+
+    Returns:
+        Tensor: Boxes with shape (N, 4), where columns represent
+            tl_x, tl_y, br_x, br_y.
+
     References:
         .. [1] https://arxiv.org/abs/1311.2524
 
@@ -206,7 +263,9 @@ def delta2bbox(rois,
                                           -1).repeat(1,
                                                      deltas.size(-1) // 4)
     stds = deltas.new_tensor(stds).view(1, -1).repeat(1, deltas.size(-1) // 4)
+    # 还原没有 norm 的 box
     denorm_deltas = deltas * stds + means
+    # 获得 dx, dy, dw, dh
     dx = denorm_deltas[..., 0::4]
     dy = denorm_deltas[..., 1::4]
     dw = denorm_deltas[..., 2::4]
@@ -215,6 +274,7 @@ def delta2bbox(rois,
     x1, y1 = rois[..., 0], rois[..., 1]
     x2, y2 = rois[..., 2], rois[..., 3]
     # Compute center of each roi
+    # ============= 预测的 roi 转化为：中心点+宽高 的形式。===================
     px = ((x1 + x2) * 0.5).unsqueeze(-1).expand_as(dx)
     py = ((y1 + y2) * 0.5).unsqueeze(-1).expand_as(dy)
     # Compute width/height of each roi
@@ -234,12 +294,14 @@ def delta2bbox(rois,
         dw = dw.clamp(min=-max_ratio, max=max_ratio)
         dh = dh.clamp(min=-max_ratio, max=max_ratio)
     # Use exp(network energy) to enlarge/shrink each roi
+    # =============== 计算经过网络偏移后的 roi 的中心点和宽高。================
     gw = pw * dw.exp()
     gh = ph * dh.exp()
     # Use network energy to shift the center of each roi
     gx = px + dx_width
     gy = py + dy_height
     # Convert center-xy/width/height to top-left, bottom-right
+    # 中心点+宽高  ==> 左上角坐标+右下角坐标。
     x1 = gx - gw * 0.5
     y1 = gy - gh * 0.5
     x2 = gx + gw * 0.5

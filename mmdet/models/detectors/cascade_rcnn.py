@@ -37,6 +37,7 @@ class CascadeRCNN(TwoStageDetector):
         Returns:
             np.ndarray: The image with bboxes drawn on it.
         """
+
         if self.with_mask:
             ms_bbox_result, ms_segm_result = result
             if isinstance(ms_bbox_result, dict):

@@ -392,8 +392,12 @@ class BBoxHead(BaseModule):
             if not isinstance(scale_factor, tuple):
                 scale_factor = tuple([scale_factor])
             if isinstance(scale_factor[0], torch.Tensor):
-                scale_factor = scale_factor[0]
+                # scale_factor = scale_factor[0]
+                scale_factor = bboxes.new_tensor(scale_factor[0]).repeat(
+                    1, 1,
+                    bboxes.size(-1)//4)
             else:
+
                 # B, 1, bboxes.size(-1)
                 scale_factor = bboxes.new_tensor(scale_factor).unsqueeze(1).repeat(
                     1, 1,

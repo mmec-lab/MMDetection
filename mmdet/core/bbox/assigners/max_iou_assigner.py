@@ -35,6 +35,24 @@ class MaxIoUAssigner(BaseAssigner):
         gpu_assign_thr (int): The upper bound of the number of GT for GPU
             assign. When the number of gt is above this threshold, will assign
             on CPU device. Negative values mean not assign on CPU.
+
+    根据 IOU 分配正负样本.
+    - -1:         代表忽略, 表示既不是正样本也不是负样本.
+    - 非负整数:    代表匹配到的类别, 可以是正样本或负样本的类别.
+
+    Args:
+        pos_iou_thr:            (float):            正样本的 IOU 阈值
+        neg_iou_thr:            (float or tuple):   负样本的 IoU 阈值
+        min_pos_iou:            (float):            分配正样本时最小的 IOU
+        gt_max_assign_all:      (bool):             是否分配所有与 gt 的 IOU 最大的 bbox 为正样本(满足 min_pos_iou).
+        ignore_iof_thr:         (float):            忽略 bboxes 的 IoF 阈值（如果 `gt_bboxes_ignore` 已指定）
+                                                    负值表示不忽略任何 bboxes。
+        ignore_wrt_candidates:  (bool):             是否计算 `bboxes` 和 `gt bboxes_ignore` 的 iof.
+        match_low_quality:      (bool):             是否对每个 gt 找出与它 iou 最大的 anchor.
+                                                    如果此 iou ≥ min_pos_iou（0.3）, 将此 anchor 设置为正样本.
+                                                    此操作一般不会用在第二阶段, 如 roi_head 中.
+        gpu_assign_thr:         (int):              GPU 的 GT 个数的上界分配. 当 gt 的数量超过此阈值时, 将分配在 CPU 设备上.
+                                                    负值表示不在 CPU 上分配.
     """
 
     def __init__(self,
@@ -82,6 +100,16 @@ class MaxIoUAssigner(BaseAssigner):
         Returns:
             :obj:`AssignResult`: The assign result.
 
+        给 bbox 分配 gt
+        Args:
+            bboxes:             (Tensor):               需要分配的 bboxes, 形状为(n, 4).
+            gt_bboxes:          (Tensor):               Ground truth boxes, 形状为 (k, 4).
+            gt_bboxes_ignore:   (Tensor, optional):     被标记为忽略的 Ground truth bboxes.
+            gt_labels:          (Tensor, optional):     gt_bboxes 的标签, 形状为 (k, ).
+
+        Returns:
+            :obj:`AssignResult`: 分配的结果
+
         Example:
             >>> self = MaxIoUAssigner(0.5, 0.5)
             >>> bboxes = torch.Tensor([[0, 0, 10, 10], [10, 10, 20, 20]])
@@ -90,6 +118,8 @@ class MaxIoUAssigner(BaseAssigner):
             >>> expected_gt_inds = torch.LongTensor([1, 0])
             >>> assert torch.all(assign_result.gt_inds == expected_gt_inds)
         """
+
+        # 如果当前的 gt box 的数量大于 gpu 分配数量的阈值, 就使用 cpu 分配.
         assign_on_cpu = True if (self.gpu_assign_thr > 0) and (
             gt_bboxes.shape[0] > self.gpu_assign_thr) else False
         # compute overlap and assign gt on CPU when number of GT is large
@@ -102,6 +132,7 @@ class MaxIoUAssigner(BaseAssigner):
             if gt_labels is not None:
                 gt_labels = gt_labels.cpu()
 
+        # 计算 gt box 和 bbox 的交并比, 形状为 (n_gts, n_bboxes)
         overlaps = self.iou_calculator(gt_bboxes, bboxes)
 
         if (self.ignore_iof_thr > 0 and gt_bboxes_ignore is not None
@@ -134,14 +165,25 @@ class MaxIoUAssigner(BaseAssigner):
 
         Returns:
             :obj:`AssignResult`: The assign result.
+
+        根据 overlaps 对 bbox 分配正负样本.
+        Args:
+            overlaps:   (Tensor):           k 个 gt_bboxes 和 n 个 bboxes 的 Overlaps,
+                                            形状为 (k, n).
+            gt_labels:  (Tensor, optional): k 个 gt_bboxes 的 labels, 形状为 (k,).
+
+        Returns:
+            :obj:`AssignResult`: 分配后结果
         """
+        # 获取 gt 的数量和 bbox 的数量.
         num_gts, num_bboxes = overlaps.size(0), overlaps.size(1)
 
         # 1. assign -1 by default
+        # 1. 给所有的 box 初始化为 -1 代表全为负样本. (num_bboxes,)
         assigned_gt_inds = overlaps.new_full((num_bboxes, ),
                                              -1,
                                              dtype=torch.long)
-
+        # 如果 gt 的数量或 bbox 的数量为 0, 直接返回.
         if num_gts == 0 or num_bboxes == 0:
             # No ground truth or boxes, return empty assignment
             max_overlaps = overlaps.new_zeros((num_bboxes, ))
@@ -162,11 +204,15 @@ class MaxIoUAssigner(BaseAssigner):
 
         # for each anchor, which gt best overlaps with it
         # for each anchor, the max iou of all gts
+
+        # 对于每个 bbox 找出和它 IOU 最大的 GT box
         max_overlaps, argmax_overlaps = overlaps.max(dim=0)
         # for each gt, which anchor best overlaps with it
         # for each gt, the max iou of all proposals
+        # 对于每个 gt, 找出和他 IOU 最大的 bbox
         gt_max_overlaps, gt_argmax_overlaps = overlaps.max(dim=1)
 
+        # 2. 最大 iou < neg_iou_thr 的设置为负样本, mask 设置为 0
         # 2. assign negative: below
         # the negative inds are set to be 0
         if isinstance(self.neg_iou_thr, float):
@@ -178,9 +224,11 @@ class MaxIoUAssigner(BaseAssigner):
                              & (max_overlaps < self.neg_iou_thr[1])] = 0
 
         # 3. assign positive: above positive IoU threshold
+        # 3. 最大 iou ≥ pos_iou_thr 的设置为正样本, mask 设置为对应类别标签
         pos_inds = max_overlaps >= self.pos_iou_thr
         assigned_gt_inds[pos_inds] = argmax_overlaps[pos_inds] + 1
 
+        # 4. 对每个 gt 找出与它 iou 最大的 bbox 如果此 iou ≥ min_pos_iou, 将此 bbox 设置为正样本
         if self.match_low_quality:
             # Low-quality matching will overwrite the assigned_gt_inds assigned
             # in Step 3. Thus, the assigned gt might not be the best one for

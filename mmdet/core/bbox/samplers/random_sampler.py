@@ -15,6 +15,13 @@ class RandomSampler(BaseSampler):
             positive samples. Defaults to -1.
         add_gt_as_proposals (bool, optional): Whether to add ground truth
             boxes as proposals. Defaults to True.
+
+    Args:
+        num:                    (int):              需要采样的个数
+        pos_fraction:           (float):            正样本数量 : 负样本数量
+        neg_pos_up:             (int, optional):    负样本与正样本数量比值的上界
+        add_gt_as_proposals:    (bool, optional):   是否添加 ground truth 作为 proposal.
+        
     """
 
     def __init__(self,

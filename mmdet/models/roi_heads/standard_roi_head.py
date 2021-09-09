@@ -1,5 +1,7 @@
 import torch
 
+from mmcv.runner import ModuleList
+
 from mmdet.core import bbox2result, bbox2roi, build_assigner, build_sampler
 from ..builder import HEADS, build_head, build_roi_extractor
 from .base_roi_head import BaseRoIHead
@@ -218,6 +220,93 @@ class StandardRoIHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
                 mask_test_cfg=self.test_cfg.get('mask'))
             return bbox_results, segm_results
 
+    #
+    def foward_tracing(self, x, proposal_list, img_metas, rescale=False):
+
+        """Test without augmentation."""
+        assert self.with_bbox, 'Bbox head must be implemented.'
+        # bbox解码和还原
+        det_bboxes, det_labels = self.simple_test_bboxes(
+            x, img_metas, proposal_list, self.test_cfg, rescale=rescale)
+
+        # 因为在解析边界框列表的时候涉及到tensor变量转换为numpy，而torch script模型转换时不支持numpy操作：
+        # 所以在这里不进行边界框列表的解析，将解析部分放到后处理部分
+        # bbox_results = [
+        #     bbox2result(det_bboxes[i], det_labels[i],
+        #                 self.bbox_head.num_classes)
+        #     for i in range(len(det_bboxes))
+        # ]
+        results = dict(bboxes=tuple(det_bboxes),
+                       labels=tuple(det_labels)
+                       )
+
+        if not self.with_mask:
+            return results
+        else:
+            ori_shapes = tuple(meta['ori_shape'] for meta in img_metas)
+            scale_factors = tuple(meta['scale_factor'] for meta in img_metas)
+
+
+            # The length of proposals of different batches may be different.
+            # In order to form a batch, a padding operation is required.
+            if isinstance(det_bboxes, list):
+                # padding to form a batch
+                max_size = max([bboxes.size(0) for bboxes in det_bboxes])
+                for i, (bbox, label) in enumerate(zip(det_bboxes, det_labels)):
+                    supplement_bbox = bbox.new_full(
+                        (max_size - bbox.size(0), bbox.size(1)), 0)
+                    supplement_label = label.new_full((max_size - label.size(0),),
+                                                      0)
+                    det_bboxes[i] = torch.cat((supplement_bbox, bbox), dim=0)
+                    det_labels[i] = torch.cat((supplement_label, label), dim=0)
+                det_bboxes = torch.stack(det_bboxes, dim=0)
+                det_labels = torch.stack(det_labels, dim=0)
+
+            batch_size = det_bboxes.size(0)
+            num_proposals_per_img = det_bboxes.shape[1]
+
+            # if det_bboxes is rescaled to the original image size, we need to
+            # rescale it back to the testing scale to obtain RoIs.
+            det_bboxes = det_bboxes[..., :4][0]
+            if rescale:
+                if not isinstance(scale_factors[0], float):
+                    scale_factors = det_bboxes.new_tensor(scale_factors[0])
+                det_bboxes = det_bboxes * scale_factors
+            det_bboxes = [det_bboxes]
+
+            mask_rois = bbox2roi(det_bboxes)
+
+            mask_results = self._mask_forward(x, mask_rois)
+            mask_pred = mask_results['mask_pred']
+
+            mask_preds = mask_pred.reshape(batch_size, num_proposals_per_img,
+                                           *mask_pred.shape[1:])
+
+            # apply mask post-processing to each image individually
+            segm_results = []
+            for i in range(batch_size):
+                mask_pred = mask_preds[i]
+                det_bbox = det_bboxes[i]
+                det_label = det_labels[i]
+
+                # remove padding
+                supplement_mask = det_bbox.abs().sum(dim=-1) != 0
+                mask_pred = mask_pred[supplement_mask]
+                det_bbox = det_bbox[supplement_mask]
+                det_label = det_label[supplement_mask]
+
+                if det_label.shape[0] == 0:
+                    segm_results.append([[]
+                                         for _ in range(self.mask_head.num_classes)
+                                         ])
+                else:
+                    segm_result = self.mask_head.get_seg_masks(
+                        mask_pred, det_bbox, det_label, self.test_cfg,
+                        ori_shapes[i], scale_factors[i], rescale)
+                    segm_results.append(segm_result)
+                results['segm'] = tuple(segm_results)
+            return results
+       
     def simple_test(self,
                     x,
                     proposal_list,
@@ -229,13 +318,14 @@ class StandardRoIHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
 
         det_bboxes, det_labels = self.simple_test_bboxes(
             x, img_metas, proposal_list, self.test_cfg, rescale=rescale)
+        # 导出为ONNX时跳过后处理阶段
         if torch.onnx.is_in_onnx_export():
             if self.with_mask:
                 segm_results = self.simple_test_mask(
                     x, img_metas, det_bboxes, det_labels, rescale=rescale)
                 return det_bboxes, det_labels, segm_results
             return det_bboxes, det_labels
-
+        # 解析边界框列表
         bbox_results = [
             bbox2result(det_bboxes[i], det_labels[i],
                         self.bbox_head.num_classes)

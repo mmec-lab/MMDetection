@@ -31,6 +31,13 @@ class RPNTestMixin:
 
         Returns:
             list[Tensor]: Proposals of each image.
+            
+        Args:
+            x:          (tuple[Tensor]):    经过 backbone 和 neck 后的 features 的元祖, 每个元素是一个尺度的 feature.
+            img_metas:  (list[dict]):       每个图像的属性信息
+
+        Returns:
+            list[Tensor]:   每个图片生成的 Proposals
         """
         rpn_outs = self(x)
         proposal_list = self.get_bboxes(*rpn_outs, img_metas)

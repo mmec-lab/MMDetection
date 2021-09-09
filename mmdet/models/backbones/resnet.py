@@ -11,6 +11,8 @@ from ..utils import ResLayer
 
 
 class BasicBlock(BaseModule):
+    """ResNet 18, 34 使用的 block"""
+    # 输出通道数为输入通道数的倍数.(输出通道数 == 输入通道数)
     expansion = 1
 
     def __init__(self,
@@ -29,10 +31,15 @@ class BasicBlock(BaseModule):
         super(BasicBlock, self).__init__(init_cfg)
         assert dcn is None, 'Not implemented yet.'
         assert plugins is None, 'Not implemented yet.'
+        # conv3x3 --> bn1 --> relu --> conv3x3 --> bn2 --> relu
 
+        # bn1, bn2
         self.norm1_name, norm1 = build_norm_layer(norm_cfg, planes, postfix=1)
         self.norm2_name, norm2 = build_norm_layer(norm_cfg, planes, postfix=2)
 
+
+        # conv1: 3x3 conv
+        # 当 conv 为 3x3 且 padding = dilation 时，原特征图大小只和 stride 有关
         self.conv1 = build_conv_layer(
             conv_cfg,
             inplanes,
@@ -43,6 +50,9 @@ class BasicBlock(BaseModule):
             dilation=dilation,
             bias=False)
         self.add_module(self.norm1_name, norm1)
+
+
+        # conv2: 3x3 conv, stride = 1, padding = 1.
         self.conv2 = build_conv_layer(
             conv_cfg, planes, planes, 3, padding=1, bias=False)
         self.add_module(self.norm2_name, norm2)
@@ -76,6 +86,7 @@ class BasicBlock(BaseModule):
             out = self.conv2(out)
             out = self.norm2(out)
 
+            # 需要保证 identity 和 x 的宽高相同.
             if self.downsample is not None:
                 identity = self.downsample(x)
 
@@ -83,17 +94,32 @@ class BasicBlock(BaseModule):
 
             return out
 
+        # 加载预训练模型并且需要求导的时候, 使用 checkpoint 用时间换取空间。
+        # 这是因为加载权重后可以训练的 epoch 数少，可以考虑时间换取空间。
         if self.with_cp and x.requires_grad:
+            # 使用 checkpoint 不保存中间计算的激活值, 在反向传播中重新计算一次中间激活值。
+            # 即重新运行一次检查点部分的前向传播，这是一种以时间换空间（显存）的方法。
             out = cp.checkpoint(_inner_forward, x)
+        # 不加载权重，从零开始训练。不使用 ckpt，因为训练慢。
         else:
+
             out = _inner_forward(x)
 
         out = self.relu(out)
-
+        # 注意：f(x) + x 之后再进行 relu
         return out
 
 
 class Bottleneck(BaseModule):
+    """ResNet 50, 101, 152 使用的 block
+
+    Args:
+        style:(str) 'pytorch' 或 'caffe'.
+                     如果使用 'pytorch', block 中 stride 为 2 的卷积层是 3x3 conv, stride=2
+                     如果使用 'caffe',   block 中 stride 为 2 的卷积层是 1x1 conv, stride=2
+    """
+
+    # 输出通道数为输入通道数的倍数. (输出通道数 == 4 × 输入通道数)
     expansion = 4
 
     def __init__(self,
@@ -157,6 +183,9 @@ class Bottleneck(BaseModule):
             self.conv1_stride = stride
             self.conv2_stride = 1
 
+        # conv1x1 --> bn1 --> relu
+        # conv3x3 --> bn2 --> relu
+        # conv1x1 --> bn3
         self.norm1_name, norm1 = build_norm_layer(norm_cfg, planes, postfix=1)
         self.norm2_name, norm2 = build_norm_layer(norm_cfg, planes, postfix=2)
         self.norm3_name, norm3 = build_norm_layer(
@@ -342,6 +371,30 @@ class ResNet(BaseModule):
         init_cfg (dict or list[dict], optional): Initialization config dict.
             Default: None
 
+    Args:
+        depth:                     (int)   ResNet 的深度, 可以是 {18, 34, 50, 101, 152}.
+        in_channels:               (int)   输入图像的通道数(默认: 3).
+        stem_channels:             (int)   stem 的通道数(默认: 64).
+        base_channels:             (int)   ResNet 的 res layer 的基础通道数(默认: 64).
+        num_stages:                (int)   使用 ResNet 的 stage 数量(默认: 4).
+        strides:         (Sequence[int])   每个 stage 的第一个 block 的 stride, 如果为 2 进行 2 倍下采样.
+        dilations:       (Sequence[int])   每个 stage 中所有 block 的第一个卷积层的 dilation.
+        out_indices:     (Sequence[int])   需要输出的 stage 的索引.
+        style:                     (str)   'pytorch' 或 'caffe'.
+                                           如果使用 'pytorch', block 中 stride 为 2 的卷积层是 3x3 conv2, stride=2
+                                           如果使用 'caffe',   block 中 stride 为 2 的卷积层是 1x1 conv1, stride=2
+        deep_stem:                (bool)   如果为 True, 将 stem 的 7x7 conv 替换为 3 个 3x3 conv.
+        avg_down:                 (bool)   在下采样的时候使用 Avg pool 2x2 stride=2 代替带步长的卷积.
+        frozen_stages:             (int)   冻结的 stage 数(停止更新梯度, 并开启eval模式), -1 代表不冻结.
+        conv_cfg:                 (dict)   构建 conv 的 config.
+        norm_cfg:                 (dict)   构建 norm 的 config.
+        norm_eval:                (bool)   是否设置 norm 层为 eval 模式. 即冻结参数状态(mean, var).
+        dcn:                      (dict)   构建 DCN 的 config.
+        stage_with_dcn: (Sequence[bool])   需要使用 DCN 的 stage.
+        plugins:            (list[dict])   为 stage 提供插件.
+        with_cp:                  (bool)   是否加载 checkpoint. 使用 checkpoint 会节省一部分内存, 同时会减少训练时间.
+        zero_init_residual:       (bool)   是否使用 0 对所有 block 中的最后一个 norm 层初始化, 使其为恒等映射.
+    
     Example:
         >>> from mmdet.models import ResNet
         >>> import torch
@@ -424,6 +477,7 @@ class ResNet(BaseModule):
         else:
             raise TypeError('pretrained must be a str or None')
 
+        # ========================== 初始化属性 =============================
         self.depth = depth
         if stem_channels is None:
             stem_channels = base_channels
@@ -451,10 +505,13 @@ class ResNet(BaseModule):
         self.plugins = plugins
         self.block, stage_blocks = self.arch_settings[depth]
         self.stage_blocks = stage_blocks[:num_stages]
+
+        # stem 层
         self.inplanes = stem_channels
 
         self._make_stem_layer(in_channels, stem_channels)
 
+        # res 层
         self.res_layers = []
         for i, num_blocks in enumerate(self.stage_blocks):
             stride = strides[i]
@@ -562,6 +619,7 @@ class ResNet(BaseModule):
         return getattr(self, self.norm1_name)
 
     def _make_stem_layer(self, in_channels, stem_channels):
+        # 使用 deep stem, 即 3 个 3x3 conv.
         if self.deep_stem:
             self.stem = nn.Sequential(
                 build_conv_layer(
@@ -594,6 +652,7 @@ class ResNet(BaseModule):
                     bias=False),
                 build_norm_layer(self.norm_cfg, stem_channels)[1],
                 nn.ReLU(inplace=True))
+        # 使用原版的 stem 即 7x7 conv
         else:
             self.conv1 = build_conv_layer(
                 self.conv_cfg,
@@ -610,6 +669,7 @@ class ResNet(BaseModule):
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
     def _freeze_stages(self):
+        # 冻结 stem 层 --> stage 为 0
         if self.frozen_stages >= 0:
             if self.deep_stem:
                 self.stem.eval()
@@ -620,7 +680,7 @@ class ResNet(BaseModule):
                 for m in [self.conv1, self.norm1]:
                     for param in m.parameters():
                         param.requires_grad = False
-
+        # 冻结 res 层  --> stage 大于 0
         for i in range(1, self.frozen_stages + 1):
             m = getattr(self, f'layer{i}')
             m.eval()

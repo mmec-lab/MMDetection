@@ -1,7 +1,7 @@
 import mmcv
 import numpy as np
-
-
+from mmdet.core import get_classes
+from mmdet.core.visualization import imshow_det_bboxes
 def show_result(img,
                 result,
                 score_thr=0.3,
@@ -9,6 +9,7 @@ def show_result(img,
                 text_color='green',
                 thickness=1,
                 font_scale=0.5,
+                font_size=13,
                 win_name='',
                 show=False,
                 wait_time=0,
@@ -38,15 +39,19 @@ def show_result(img,
     """
     img = mmcv.imread(img)
     img = img.copy()
+    # result = list(result[0])
     if isinstance(result, tuple):
         bbox_result, segm_result = result
         if isinstance(segm_result, tuple):
             segm_result = segm_result[0]  # ms rcnn
-    elif isinstance(result, list):
-        bbox_result, segm_result = result[0]
+        bbox_result, segm_result = result[0]  # 针对分割
+    elif isinstance(result, list) and len(result[0]) == 1:
+        bbox_result, segm_result = result[0][0], None  # 不针对分割
     else:
         bbox_result, segm_result = result, None
     bboxes = np.vstack(bbox_result)
+    for i, bbox in enumerate(bbox_result):
+        break
     labels = [
         np.full(bbox.shape[0], i, dtype=np.int32)
         for i, bbox in enumerate(bbox_result)
@@ -70,11 +75,13 @@ def show_result(img,
     if out_file is not None:
         show = False
     # draw bounding boxes
+
     mmcv.imshow_det_bboxes(
         img,
         bboxes,
         labels,
-        class_names=None,
+        # class_names=None,
+        class_names=get_classes('coco'),
         score_thr=score_thr,
         bbox_color=bbox_color,
         text_color=text_color,

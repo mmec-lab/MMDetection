@@ -130,6 +130,24 @@ class DynamicRoIHead(StandardRoIHead):
         bbox_results.update(loss_bbox=loss_bbox)
         return bbox_results
 
+    def foward_tracing(self, x, proposal_list, img_metas, rescale=False):
+
+        """Test without augmentation."""
+        assert self.with_bbox, 'Bbox head must be implemented.'
+        # bbox解码和还原
+        det_bboxes, det_labels = self.simple_test_bboxes(
+            x, img_metas, proposal_list, self.test_cfg, rescale=rescale)
+
+        bbox_results = dict(bboxes=tuple(det_bboxes),
+                       labels=tuple(det_labels)
+                       )
+
+        if not self.with_mask:
+            return bbox_results
+        else:
+            segm_results = self.simple_test_mask(
+                x, img_metas, det_bboxes, det_labels, rescale=rescale)
+            return list(zip(bbox_results, segm_results))
     def update_hyperparameters(self):
         """Update hyperparameters like IoU thresholds for assigner and beta for
         SmoothL1 loss based on the training statistics.

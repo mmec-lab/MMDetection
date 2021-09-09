@@ -74,6 +74,7 @@ class BaseDetector(BaseModule, metaclass=ABCMeta):
         # NOTE the batched image size information may be useful, e.g.
         # in DETR, this is needed for the construction of masks, which is
         # then used for the transformer_head.
+        print("*****************forward_train1***************:")
         batch_input_shape = tuple(imgs[0].size()[-2:])
         for img_meta in img_metas:
             img_meta['batch_input_shape'] = batch_input_shape
@@ -163,9 +164,12 @@ class BaseDetector(BaseModule, metaclass=ABCMeta):
         should be double nested (i.e.  List[Tensor], List[List[dict]]), with
         the outer list indicating test time augmentations.
         """
+
         if return_loss:
+            print("*****************base.py forward_test***************:")
             return self.forward_train(img, img_metas, **kwargs)
         else:
+            print("*****************base.py forward_train***************:")
             return self.forward_test(img, img_metas, **kwargs)
 
     def _parse_losses(self, losses):
@@ -296,13 +300,20 @@ class BaseDetector(BaseModule, metaclass=ABCMeta):
         """
         img = mmcv.imread(img)
         img = img.copy()
+        print("result_type:", type(result))
+        print("result:", result)
         if isinstance(result, tuple):
             bbox_result, segm_result = result
+            print("img_show:_0")
             if isinstance(segm_result, tuple):
+                print("img_show:_1")
                 segm_result = segm_result[0]  # ms rcnn
         else:
+            print("img_show:_3")
             bbox_result, segm_result = result, None
         bboxes = np.vstack(bbox_result)
+        print("bboxes:", type(bboxes), bboxes)
+        print("bbox_result1:", type(bbox_result), bbox_result)
         labels = [
             np.full(bbox.shape[0], i, dtype=np.int32)
             for i, bbox in enumerate(bbox_result)
@@ -320,6 +331,8 @@ class BaseDetector(BaseModule, metaclass=ABCMeta):
         if out_file is not None:
             show = False
         # draw bounding boxes
+        print("bboxes.shape:", bboxes.shape)
+        print("labels.shape:", labels.shape)
         img = imshow_det_bboxes(
             img,
             bboxes,

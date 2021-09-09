@@ -44,7 +44,6 @@ class TwoStageDetector(BaseDetector):
             roi_head.update(test_cfg=test_cfg.rcnn)
             roi_head.pretrained = pretrained
             self.roi_head = build_head(roi_head)
-
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
@@ -95,12 +94,14 @@ class TwoStageDetector(BaseDetector):
         # img, img_metas, proposals, rescale = torch.load('../cache/temp_vars.pth')
 
         # backbone
+        # 先进行 backbone+neck 的特征提取
         x = self.extract_feat(img)
 
         # rpn
         proposal_list = self.rpn_head.simple_test_rpn(x, img_metas)
 
         # roi_head
+        # 第二阶段，主要是调用 roi_head 内部的 forward_train 方法
         return self.roi_head.foward_tracing(x, proposal_list, img_metas, rescale=True)
 
     def forward_train(self,
@@ -188,7 +189,7 @@ class TwoStageDetector(BaseDetector):
     def simple_test(self, img, img_metas, proposals=None, rescale=False):
         """Test without augmentation."""
         assert self.with_bbox, 'Bbox head must be implemented.'
-
+        print("================two_stage.py simple_test===============")
         x = self.extract_feat(img)
 
         # get origin input shape to onnx dynamic input shape

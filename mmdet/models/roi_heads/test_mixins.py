@@ -49,6 +49,7 @@ class BBoxTestMixin:
                 cfg=rcnn_test_cfg)
             return det_bboxes, det_labels
 
+    # 测试
     def simple_test_bboxes(self,
                            x,
                            img_metas,
@@ -156,6 +157,7 @@ class BBoxTestMixin:
         else:
             bbox_pred = None
 
+        # 将head的输出转换成具体的边界框列表
         return self.bbox_head.get_bboxes(
             rois,
             cls_score,
@@ -165,6 +167,7 @@ class BBoxTestMixin:
             rescale=rescale,
             cfg=rcnn_test_cfg)
 
+    # 测试时使用数据增强
     def aug_test_bboxes(self, feats, img_metas, proposal_list, rcnn_test_cfg):
         """Test det bboxes with test time augmentation."""
         aug_bboxes = []

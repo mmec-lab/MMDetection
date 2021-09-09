@@ -8,6 +8,7 @@ import torch.serialization
 from mmcv.ops import RoIAlign, RoIPool
 from mmcv.runner import load_checkpoint
 from torch import nn
+from mmdet.models.detectors.cascade_rcnn import CascadeRCNN
 
 from mmdet.models import build_detector
 from utils import reformat_data
@@ -123,14 +124,17 @@ def pytorch2libtorch(model,
             m.use_torchvision = True
 
     # replace the orginal forword with forward_dummy
+
     model.forward = model.forward_tracing
     model.eval()
     traced_model = torch.jit.trace(
         model,
         example_inputs=(mm_inputs['img'],
                         mm_inputs['img_metas'],),
+        # check_trace=verify,
+        # strict=False
         check_trace=verify,
-        strict=False,
+        strict=False
     )
 
     if show:
@@ -171,11 +175,12 @@ if __name__ == '__main__':
 
     # build the model and load checkpoint
     cfg.model.train_cfg = None
+
+    # cfg.model.test_cfg = None
     detector = build_detector(cfg.model, train_cfg=None, test_cfg=cfg.get('test_cfg'))
 
     # convert SyncBN to BN
     detector = _convert_batchnorm(detector)
-
     if args.checkpoint:
         load_checkpoint(detector, args.checkpoint, map_location='cpu')
 
